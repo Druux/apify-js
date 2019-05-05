@@ -1,38 +1,61 @@
-import util from 'util';
-import zlib from 'zlib';
-import rqst from 'request';
-import _ from 'underscore';
-import cheerio from 'cheerio';
-import contentType from 'content-type';
-import log from 'apify-shared/log';
-import { checkParamOrThrow } from 'apify-client/build/utils';
-import BasicCrawler from './basic_crawler';
-import { addTimeoutToPromise } from './utils';
-import { getApifyProxyUrl } from './actor';
-import { BASIC_CRAWLER_TIMEOUT_MULTIPLIER } from './constants';
+"use strict";
+
+Object.defineProperty(exports, "__esModule", {
+  value: true
+});
+exports.default = void 0;
+
+var _util = _interopRequireDefault(require("util"));
+
+var _zlib = _interopRequireDefault(require("zlib"));
+
+var _request = _interopRequireDefault(require("request"));
+
+var _underscore = _interopRequireDefault(require("underscore"));
+
+var _cheerio = _interopRequireDefault(require("cheerio"));
+
+var _contentType = _interopRequireDefault(require("content-type"));
+
+var _log = _interopRequireDefault(require("apify-shared/log"));
+
+var _utils = require("apify-client/build/utils");
+
+var _basic_crawler = _interopRequireDefault(require("./basic_crawler"));
+
+var _utils2 = require("./utils");
+
+var _actor = require("./actor");
+
+var _constants = require("./constants");
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
 
 const DEFAULT_OPTIONS = {
-    requestTimeoutSecs: 30,
-    handlePageTimeoutSecs: 60,
-    handleFailedRequestFunction: ({ request }) => {
-        const details = _.pick(request, 'id', 'url', 'method', 'uniqueKey');
+  requestTimeoutSecs: 30,
+  handlePageTimeoutSecs: 60,
+  handleFailedRequestFunction: ({
+    request
+  }) => {
+    const details = _underscore.default.pick(request, 'id', 'url', 'method', 'uniqueKey');
 
-        log.error('CheerioCrawler: Request failed and reached maximum retries', details);
+    _log.default.error('CheerioCrawler: Request failed and reached maximum retries', details);
+  },
+  ignoreSslErrors: false,
+  useApifyProxy: false,
+  autoscaledPoolOptions: {
+    snapshotterOptions: {
+      eventLoopSnapshotIntervalSecs: 2,
+      maxBlockedMillis: 100
     },
-    ignoreSslErrors: false,
-    useApifyProxy: false,
-    autoscaledPoolOptions: {
-        snapshotterOptions: {
-            eventLoopSnapshotIntervalSecs: 2,
-            maxBlockedMillis: 100,
-        },
-        systemStatusOptions: {
-            maxEventLoopOverloadedRatio: 0.7,
-        },
-    },
-    prepareRequestFunction: ({ request }) => request,
+    systemStatusOptions: {
+      maxEventLoopOverloadedRatio: 0.7
+    }
+  },
+  prepareRequestFunction: ({
+    request
+  }) => request
 };
-
 /**
  * Provides a framework for the parallel crawling of web pages using plain HTTP requests and
  * <a href="https://www.npmjs.com/package/cheerio" target="_blank">cheerio</a> HTML parser.
@@ -217,307 +240,328 @@ const DEFAULT_OPTIONS = {
  * @param {Object} [options.maxConcurrency=1000]
  *   Sets the maximum concurrency (parallelism) for the crawl. Shortcut to the corresponding {@link AutoscaledPool} option.
  */
+
 class CheerioCrawler {
-    constructor(options = {}) {
+  constructor(options = {}) {
+    const {
+      requestOptions,
+      handlePageFunction,
+      requestTimeoutSecs,
+      handlePageTimeoutSecs,
+      ignoreSslErrors,
+      useApifyProxy,
+      apifyProxyGroups,
+      apifyProxySession,
+      proxyUrls,
+      // Autoscaled pool shorthands
+      minConcurrency,
+      maxConcurrency,
+      // Basic crawler options
+      requestList,
+      requestQueue,
+      maxRequestRetries,
+      maxRequestsPerCrawl,
+      handleFailedRequestFunction,
+      autoscaledPoolOptions,
+      prepareRequestFunction
+    } = _underscore.default.defaults({}, options, DEFAULT_OPTIONS);
+
+    (0, _utils.checkParamOrThrow)(handlePageFunction, 'options.handlePageFunction', 'Function');
+    (0, _utils.checkParamOrThrow)(requestOptions, 'options.requestOptions', 'Maybe Object');
+    (0, _utils.checkParamOrThrow)(requestTimeoutSecs, 'options.requestTimeoutSecs', 'Number');
+    (0, _utils.checkParamOrThrow)(handlePageTimeoutSecs, 'options.handlePageTimeoutSecs', 'Number');
+    (0, _utils.checkParamOrThrow)(ignoreSslErrors, 'options.ignoreSslErrors', 'Maybe Boolean');
+    (0, _utils.checkParamOrThrow)(useApifyProxy, 'options.useApifyProxy', 'Maybe Boolean');
+    (0, _utils.checkParamOrThrow)(apifyProxyGroups, 'options.apifyProxyGroups', 'Maybe [String]');
+    (0, _utils.checkParamOrThrow)(apifyProxySession, 'options.apifyProxySession', 'Maybe String');
+    (0, _utils.checkParamOrThrow)(proxyUrls, 'options.proxyUrls', 'Maybe [String]');
+    (0, _utils.checkParamOrThrow)(prepareRequestFunction, 'options.prepareRequestFunction', 'Maybe Function'); // Enforce valid proxy configuration
+
+    if (proxyUrls && !proxyUrls.length) throw new Error('Parameter "options.proxyUrls" of type Array must not be empty');
+    if (useApifyProxy && proxyUrls) throw new Error('Cannot combine "options.useApifyProxy" with "options.proxyUrls"!');
+    this.requestOptions = requestOptions;
+    this.handlePageFunction = handlePageFunction;
+    this.handlePageTimeoutMillis = handlePageTimeoutSecs * 1000;
+    this.requestTimeoutMillis = requestTimeoutSecs * 1000;
+    this.ignoreSslErrors = ignoreSslErrors;
+    this.useApifyProxy = useApifyProxy;
+    this.apifyProxyGroups = apifyProxyGroups;
+    this.apifyProxySession = apifyProxySession;
+    this.proxyUrls = _underscore.default.shuffle(proxyUrls);
+    this.lastUsedProxyUrlIndex = 0;
+    this.prepareRequestFunction = prepareRequestFunction;
+    this.basicCrawler = new _basic_crawler.default({
+      // Basic crawler options.
+      requestList,
+      requestQueue,
+      maxRequestRetries,
+      maxRequestsPerCrawl,
+      handleRequestFunction: (...args) => this._handleRequestFunction(...args),
+      handleRequestTimeoutSecs: handlePageTimeoutSecs * _constants.BASIC_CRAWLER_TIMEOUT_MULTIPLIER,
+      handleFailedRequestFunction,
+      // Autoscaled pool options.
+      minConcurrency,
+      maxConcurrency,
+      autoscaledPoolOptions
+    }); // See the _suppressTunnelAgentAssertError function.
+
+    this.tunnelAgentExceptionListener = null;
+    this.isRunningPromise = null;
+  }
+  /**
+   * Runs the crawler. Returns promise that gets resolved once all the requests got processed.
+   *
+   * @return {Promise}
+   */
+
+
+  async run() {
+    if (this.isRunningPromise) return this.isRunningPromise;
+
+    this._suppressTunnelAgentAssertError();
+
+    this.isRunningPromise = this.basicCrawler.run();
+    await this.isRunningPromise;
+    process.removeListener('uncaughtException', this.tunnelAgentExceptionListener);
+    this.tunnelAgentExceptionListener = null;
+  }
+  /**
+   * Wrapper around handlePageFunction that opens and closes pages etc.
+   *
+   * @ignore
+   */
+
+
+  async _handleRequestFunction({
+    request,
+    autoscaledPool
+  }) {
+    const modifiedRequest = await this.prepareRequestFunction({
+      request
+    });
+    const response = await (0, _utils2.addTimeoutToPromise)(this._requestFunction({
+      request: modifiedRequest
+    }), this.requestTimeoutMillis, 'CheerioCrawler: requestFunction timed out.');
+    const html = response.body;
+    request.loadedUrl = response.request.uri.href;
+
+    const $ = _cheerio.default.load(html, { xmlMode: true });
+
+    return (0, _utils2.addTimeoutToPromise)(this.handlePageFunction({
+      $,
+      html,
+      request,
+      response,
+      autoscaledPool
+    }), this.handlePageTimeoutMillis, 'CheerioCrawler: handlePageFunction timed out.');
+  }
+  /**
+   * Function to make the HTTP request. It performs optimizations
+   * on the request such as only downloading the request body if the
+   * received content type matches text/html.
+   * @ignore
+   */
+
+
+  async _requestFunction({
+    request
+  }) {
+    return new Promise((resolve, reject) => {
+      // Using the streaming API of Request to be able to
+      // handle the response based on headers receieved.
+      const opts = this._getRequestOptions(request);
+
+      const method = opts.method.toLowerCase();
+
+      _request.default[method](opts).on('error', err => reject(err)).on('response', async res => {
+        // First check what kind of response we received.
+        let cType;
+
+        try {
+          cType = _contentType.default.parse(res);
+        } catch (err) {
+          res.destroy(); // No reason to parse the body if the Content-Type header is invalid.
+
+          return reject(new Error(`CheerioCrawler: Invalid Content-Type header for URL: ${request.url}`));
+        }
+
         const {
-            requestOptions,
-            handlePageFunction,
-            requestTimeoutSecs,
-            handlePageTimeoutSecs,
-            ignoreSslErrors,
-            useApifyProxy,
-            apifyProxyGroups,
-            apifyProxySession,
-            proxyUrls,
+          type,
+          encoding
+        } = cType; // 500 codes are handled as errors, requests will be retried.
 
-            // Autoscaled pool shorthands
-            minConcurrency,
-            maxConcurrency,
+        const status = res.statusCode;
 
-            // Basic crawler options
-            requestList,
-            requestQueue,
-            maxRequestRetries,
-            maxRequestsPerCrawl,
-            handleFailedRequestFunction,
-            autoscaledPoolOptions,
-            prepareRequestFunction,
-        } = _.defaults({}, options, DEFAULT_OPTIONS);
+        if (status >= 500) {
+          let body;
 
-        checkParamOrThrow(handlePageFunction, 'options.handlePageFunction', 'Function');
-        checkParamOrThrow(requestOptions, 'options.requestOptions', 'Maybe Object');
-        checkParamOrThrow(requestTimeoutSecs, 'options.requestTimeoutSecs', 'Number');
-        checkParamOrThrow(handlePageTimeoutSecs, 'options.handlePageTimeoutSecs', 'Number');
-        checkParamOrThrow(ignoreSslErrors, 'options.ignoreSslErrors', 'Maybe Boolean');
-        checkParamOrThrow(useApifyProxy, 'options.useApifyProxy', 'Maybe Boolean');
-        checkParamOrThrow(apifyProxyGroups, 'options.apifyProxyGroups', 'Maybe [String]');
-        checkParamOrThrow(apifyProxySession, 'options.apifyProxySession', 'Maybe String');
-        checkParamOrThrow(proxyUrls, 'options.proxyUrls', 'Maybe [String]');
-        checkParamOrThrow(prepareRequestFunction, 'options.prepareRequestFunction', 'Maybe Function');
-        // Enforce valid proxy configuration
-        if (proxyUrls && !proxyUrls.length) throw new Error('Parameter "options.proxyUrls" of type Array must not be empty');
-        if (useApifyProxy && proxyUrls) throw new Error('Cannot combine "options.useApifyProxy" with "options.proxyUrls"!');
+          try {
+            body = await this._readStreamIntoString(res, encoding);
+          } catch (err) {
+            // Error in reading the body.
+            return reject(err);
+          } // Errors are often sent as JSON, so attempt to parse them,
+          // despite Accept header being set to text/html.
 
-        this.requestOptions = requestOptions;
-        this.handlePageFunction = handlePageFunction;
-        this.handlePageTimeoutMillis = handlePageTimeoutSecs * 1000;
-        this.requestTimeoutMillis = requestTimeoutSecs * 1000;
-        this.ignoreSslErrors = ignoreSslErrors;
-        this.useApifyProxy = useApifyProxy;
-        this.apifyProxyGroups = apifyProxyGroups;
-        this.apifyProxySession = apifyProxySession;
-        this.proxyUrls = _.shuffle(proxyUrls);
-        this.lastUsedProxyUrlIndex = 0;
-        this.prepareRequestFunction = prepareRequestFunction;
 
-        this.basicCrawler = new BasicCrawler({
-            // Basic crawler options.
-            requestList,
-            requestQueue,
-            maxRequestRetries,
-            maxRequestsPerCrawl,
-            handleRequestFunction: (...args) => this._handleRequestFunction(...args),
-            handleRequestTimeoutSecs: handlePageTimeoutSecs * BASIC_CRAWLER_TIMEOUT_MULTIPLIER,
-            handleFailedRequestFunction,
-
-            // Autoscaled pool options.
-            minConcurrency,
-            maxConcurrency,
-            autoscaledPoolOptions,
-        });
-
-        // See the _suppressTunnelAgentAssertError function.
-        this.tunnelAgentExceptionListener = null;
-        this.isRunningPromise = null;
-    }
-
-    /**
-     * Runs the crawler. Returns promise that gets resolved once all the requests got processed.
-     *
-     * @return {Promise}
-     */
-    async run() {
-        if (this.isRunningPromise) return this.isRunningPromise;
-
-        this._suppressTunnelAgentAssertError();
-        this.isRunningPromise = this.basicCrawler.run();
-        await this.isRunningPromise;
-        process.removeListener('uncaughtException', this.tunnelAgentExceptionListener);
-        this.tunnelAgentExceptionListener = null;
-    }
-
-    /**
-     * Wrapper around handlePageFunction that opens and closes pages etc.
-     *
-     * @ignore
-     */
-    async _handleRequestFunction({ request, autoscaledPool }) {
-        const modifiedRequest = await this.prepareRequestFunction({ request });
-        const response = await addTimeoutToPromise(
-            this._requestFunction({ request: modifiedRequest }),
-            this.requestTimeoutMillis,
-            'CheerioCrawler: requestFunction timed out.',
-        );
-
-        const html = response.body;
-        request.loadedUrl = response.request.uri.href;
-
-        const $ = cheerio.load(html);
-        return addTimeoutToPromise(
-            this.handlePageFunction({ $, html, request, response, autoscaledPool }),
-            this.handlePageTimeoutMillis,
-            'CheerioCrawler: handlePageFunction timed out.',
-        );
-    }
-
-    /**
-     * Function to make the HTTP request. It performs optimizations
-     * on the request such as only downloading the request body if the
-     * received content type matches text/html.
-     * @ignore
-     */
-    async _requestFunction({ request }) {
-        return new Promise((resolve, reject) => {
-            // Using the streaming API of Request to be able to
-            // handle the response based on headers receieved.
-            const opts = this._getRequestOptions(request);
-            const method = opts.method.toLowerCase();
-            rqst[method](opts)
-                .on('error', err => reject(err))
-                .on('response', async (res) => {
-                    // First check what kind of response we received.
-                    let cType;
-                    try {
-                        cType = contentType.parse(res);
-                    } catch (err) {
-                        res.destroy();
-                        // No reason to parse the body if the Content-Type header is invalid.
-                        return reject(new Error(`CheerioCrawler: Invalid Content-Type header for URL: ${request.url}`));
-                    }
-
-                    const { type, encoding } = cType;
-
-                    // 500 codes are handled as errors, requests will be retried.
-                    const status = res.statusCode;
-                    if (status >= 500) {
-                        let body;
-                        try {
-                            body = await this._readStreamIntoString(res, encoding);
-                        } catch (err) {
-                            // Error in reading the body.
-                            return reject(err);
-                        }
-                        // Errors are often sent as JSON, so attempt to parse them,
-                        // despite Accept header being set to text/html.
-                        if (type === 'application/json') {
-                            const errorResponse = JSON.parse(body);
-                            let { message } = errorResponse;
-                            if (!message) message = util.inspect(errorResponse, { depth: 1, maxArrayLength: 10 });
-                            return reject(new Error(`${status} - ${message}`));
-                        }
-                        // It's not a JSON so it's probably some text. Get the first 100 chars of it.
-                        return reject(new Error(`CheerioCrawler: ${status} - Internal Server Error: ${body.substr(0, 100)}`));
-                    }
-
-                    // Handle situations where the server explicitly states that
-                    // it will not serve the resource as text/html by skipping.
-                    if (status === 406) {
-                        request.doNotRetry();
-                        res.destroy();
-                        return reject(new Error(`CheerioCrawler: Resource ${request.url} is not available in HTML format. Skipping resource.`));
-                    }
-
-                    // Other 200-499 responses are considered OK, but first check the content type.
-                    if (type !== 'text/html') {
-                        request.doNotRetry();
-                        res.destroy();
-                        return reject(new Error(
-                            `CheerioCrawler: Resource ${request.url} served Content-Type ${type} instead of text/html. Skipping resource.`,
-                        ));
-                    }
-
-                    // Content-Type is fine. Read the body and respond.
-                    try {
-                        res.body = await this._readStreamIntoString(res, encoding);
-                        resolve(res);
-                    } catch (err) {
-                        // Error in reading the body.
-                        reject(err);
-                    }
-                });
-        });
-    }
-
-    /**
-     * Combines the provided `requestOptions` with mandatory (non-overridable) values.
-     * @param {Request} request
-     * @ignore
-     */
-    _getRequestOptions(request) {
-        const mandatoryRequestOptions = {
-            url: request.url,
-            method: request.method,
-            headers: Object.assign({}, request.headers, {
-                Accept: 'text/html',
-                'Accept-Encoding': 'gzip, deflate',
-            }),
-            strictSSL: !this.ignoreSslErrors,
-            proxy: this._getProxyUrl(),
-        };
-
-        if (/PATCH|POST|PUT/.test(request.method)) mandatoryRequestOptions.body = request.payload;
-
-        return Object.assign({}, this.requestOptions, mandatoryRequestOptions);
-    }
-
-    /**
-     * Enables the use of a proxy by returning a proxy URL
-     * based on configured options or null if no proxy is used.
-     * @ignore
-     */
-    _getProxyUrl() {
-        if (this.useApifyProxy) {
-            return getApifyProxyUrl({
-                groups: this.apifyProxyGroups,
-                session: this.apifyProxySession,
-                groupsParamName: 'options.apifyProxyGroups',
-                sessionParamName: 'options.apifyProxySession',
+          if (type === 'application/json') {
+            const errorResponse = JSON.parse(body);
+            let {
+              message
+            } = errorResponse;
+            if (!message) message = _util.default.inspect(errorResponse, {
+              depth: 1,
+              maxArrayLength: 10
             });
+            return reject(new Error(`${status} - ${message}`));
+          } // It's not a JSON so it's probably some text. Get the first 100 chars of it.
+
+
+          return reject(new Error(`CheerioCrawler: ${status} - Internal Server Error: ${body.substr(0, 100)}`));
+        } // Handle situations where the server explicitly states that
+        // it will not serve the resource as text/html by skipping.
+
+
+        if (status === 406) {
+          request.doNotRetry();
+          res.destroy();
+          return reject(new Error(`CheerioCrawler: Resource ${request.url} is not available in HTML format. Skipping resource.`));
+        } // Other 200-499 responses are considered OK, but first check the content type.
+
+        if (type !== 'text/html' && type !== 'application/rss+xml' && type !== 'application/xml' && type !== 'text/xml') {
+          request.doNotRetry();
+          res.destroy();
+          return reject(new Error(`CheerioCrawler: Resource ${request.url} served Content-Type ${type} instead of text/html. Skipping resource.`));
+        } // Content-Type is fine. Read the body and respond.
+
+
+        try {
+          res.body = await this._readStreamIntoString(res, encoding);
+          resolve(res);
+        } catch (err) {
+          // Error in reading the body.
+          reject(err);
         }
-        if (this.proxyUrls) {
-            return this.proxyUrls[this.lastUsedProxyUrlIndex++ % this.proxyUrls.length];
-        }
-        return null;
+      });
+    });
+  }
+  /**
+   * Combines the provided `requestOptions` with mandatory (non-overridable) values.
+   * @param {Request} request
+   * @ignore
+   */
+
+
+  _getRequestOptions(request) {
+    const mandatoryRequestOptions = {
+      url: request.url,
+      method: request.method,
+      headers: Object.assign({}, request.headers, {
+        Accept: 'text/html',
+        'Accept-Encoding': 'gzip, deflate'
+      }),
+      strictSSL: !this.ignoreSslErrors,
+      proxy: this._getProxyUrl()
+    };
+    if (/PATCH|POST|PUT/.test(request.method)) mandatoryRequestOptions.body = request.payload;
+    return Object.assign({}, this.requestOptions, mandatoryRequestOptions);
+  }
+  /**
+   * Enables the use of a proxy by returning a proxy URL
+   * based on configured options or null if no proxy is used.
+   * @ignore
+   */
+
+
+  _getProxyUrl() {
+    if (this.useApifyProxy) {
+      return (0, _actor.getApifyProxyUrl)({
+        groups: this.apifyProxyGroups,
+        session: this.apifyProxySession,
+        groupsParamName: 'options.apifyProxyGroups',
+        sessionParamName: 'options.apifyProxySession'
+      });
     }
 
-    /**
-     * Flushes the provided stream into a Buffer and transforms
-     * it to a String using the provided encoding or utf-8 as default.
-     *
-     * If the stream data is compressed, decompresses it using
-     * the Content-Encoding header.
-     *
-     * @param {http.IncomingMessage} response
-     * @param {String} [encoding]
-     * @returns {Promise<String>}
-     * @private
-     */
-    async _readStreamIntoString(response, encoding) { // eslint-disable-line class-methods-use-this
-        const compression = response.headers['content-encoding'];
-        let stream = response;
-        if (compression) {
-            let decompressor;
-            if (compression === 'gzip') decompressor = zlib.createGunzip();
-            else if (compression === 'deflate') decompressor = zlib.createInflate();
-            else throw new Error(`CheerioCrawler: Invalid Content-Encoding header. Expected gzip or deflate, but received: ${compression}`);
-            stream = response.pipe(decompressor);
+    if (this.proxyUrls) {
+      return this.proxyUrls[this.lastUsedProxyUrlIndex++ % this.proxyUrls.length];
+    }
+
+    return null;
+  }
+  /**
+   * Flushes the provided stream into a Buffer and transforms
+   * it to a String using the provided encoding or utf-8 as default.
+   *
+   * If the stream data is compressed, decompresses it using
+   * the Content-Encoding header.
+   *
+   * @param {http.IncomingMessage} response
+   * @param {String} [encoding]
+   * @returns {Promise<String>}
+   * @private
+   */
+
+
+  async _readStreamIntoString(response, encoding) {
+    // eslint-disable-line class-methods-use-this
+    const compression = response.headers['content-encoding'];
+    let stream = response;
+
+    if (compression) {
+      let decompressor;
+      if (compression === 'gzip') decompressor = _zlib.default.createGunzip();else if (compression === 'deflate') decompressor = _zlib.default.createInflate();else throw new Error(`CheerioCrawler: Invalid Content-Encoding header. Expected gzip or deflate, but received: ${compression}`);
+      stream = response.pipe(decompressor);
+    }
+
+    return new Promise((resolve, reject) => {
+      const chunks = [];
+      stream.on('data', chunk => chunks.push(chunk)).on('error', err => reject(err)).on('end', () => {
+        const buffer = Buffer.concat(chunks);
+        resolve(buffer.toString(encoding));
+      });
+    });
+  }
+  /**
+   * The handler this function attaches overcomes a long standing bug in
+   * the tunnel-agent NPM package that is used by the Request package internally.
+   * The package throws an assertion error in a callback scope that cannot be
+   * caught by conventional means and shuts down the running process.
+   * @ignore
+   */
+
+
+  _suppressTunnelAgentAssertError() {
+    // Only set the handler if it's not already set.
+    if (this.tunnelAgentExceptionListener) return;
+
+    this.tunnelAgentExceptionListener = err => {
+      try {
+        const code = err.code === 'ERR_ASSERTION';
+        const name = err.name === 'AssertionError [ERR_ASSERTION]';
+        const operator = err.operator === '==';
+        const value = err.expected === 0;
+        const stack = err.stack.includes('/tunnel-agent/index.js'); // If this passes, we can be reasonably sure that it's
+        // the right error from tunnel-agent.
+
+        if (code && name && operator && value && stack) {
+          _log.default.error('CheerioCrawler: Tunnel-Agent assertion error intercepted. The affected request will timeout.');
+
+          return;
         }
+      } catch (caughtError) {} // Catch any exception resulting from the duck-typing
+      // check. It only means that the error is not the one
+      // we're looking for.
+      // Rethrow the original error if it's not a match.
 
-        return new Promise((resolve, reject) => {
-            const chunks = [];
-            stream
-                .on('data', chunk => chunks.push(chunk))
-                .on('error', err => reject(err))
-                .on('end', () => {
-                    const buffer = Buffer.concat(chunks);
-                    resolve(buffer.toString(encoding));
-                });
-        });
-    }
 
-    /**
-     * The handler this function attaches overcomes a long standing bug in
-     * the tunnel-agent NPM package that is used by the Request package internally.
-     * The package throws an assertion error in a callback scope that cannot be
-     * caught by conventional means and shuts down the running process.
-     * @ignore
-     */
-    _suppressTunnelAgentAssertError() {
-        // Only set the handler if it's not already set.
-        if (this.tunnelAgentExceptionListener) return;
-        this.tunnelAgentExceptionListener = (err) => {
-            try {
-                const code = err.code === 'ERR_ASSERTION';
-                const name = err.name === 'AssertionError [ERR_ASSERTION]';
-                const operator = err.operator === '==';
-                const value = err.expected === 0;
-                const stack = err.stack.includes('/tunnel-agent/index.js');
-                // If this passes, we can be reasonably sure that it's
-                // the right error from tunnel-agent.
-                if (code && name && operator && value && stack) {
-                    log.error('CheerioCrawler: Tunnel-Agent assertion error intercepted. The affected request will timeout.');
-                    return;
-                }
-            } catch (caughtError) {
-                // Catch any exception resulting from the duck-typing
-                // check. It only means that the error is not the one
-                // we're looking for.
-            }
-            // Rethrow the original error if it's not a match.
-            throw err;
-        };
-        process.on('uncaughtException', this.tunnelAgentExceptionListener);
-    }
+      throw err;
+    };
+
+    process.on('uncaughtException', this.tunnelAgentExceptionListener);
+  }
+
 }
 
-export default CheerioCrawler;
+var _default = CheerioCrawler;
+exports.default = _default;
