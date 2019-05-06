@@ -417,7 +417,7 @@ class CheerioCrawler {
           } // It's not a JSON so it's probably some text. Get the first 100 chars of it.
 
 
-          return reject(new Error(`CheerioCrawler: ${status} - Internal Server Error: ${body.substr(0, 100)}`));
+          return reject(new Error(`CheerioCrawler: ${status} - Internal Server Error`));
         } // Handle situations where the server explicitly states that
         // it will not serve the resource as text/html by skipping.
 
