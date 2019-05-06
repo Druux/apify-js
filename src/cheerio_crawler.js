@@ -428,10 +428,10 @@ class CheerioCrawler {
           return reject(new Error(`CheerioCrawler: Resource ${request.url} is not available in HTML format. Skipping resource.`));
         } // Other 200-499 responses are considered OK, but first check the content type.
 
-        if (type !== 'text/html' && type !== 'application/rss+xml' && type !== 'application/xml' && type !== 'text/xml') {
+        if (type !== 'application/rss+xml' && type !== 'application/xml' && type !== 'text/xml') {
           request.doNotRetry();
           res.destroy();
-          return reject(new Error(`CheerioCrawler: Resource ${request.url} served Content-Type ${type} instead of text/html. Skipping resource.`));
+          return reject(new Error(`CheerioCrawler: Resource ${request.url} served Content-Type ${type} instead of text/xml. Skipping resource.`));
         } // Content-Type is fine. Read the body and respond.
 
 
