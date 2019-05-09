@@ -377,6 +377,12 @@ class CheerioCrawler {
         // First check what kind of response we received.
         let cType;
 
+        if (res.statusCode >= 300) {
+          res.destroy();
+
+          return reject({ code: 2006, message: `${res.statusCode} ${res.statusMessage}` })
+        }
+          
         try {
           cType = _contentType.default.parse(res);
         } catch (err) {
