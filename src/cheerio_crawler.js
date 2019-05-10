@@ -380,7 +380,7 @@ class CheerioCrawler {
         if (res.statusCode >= 300) {
           res.destroy();
 
-          return reject({ code: 2006, message: `${res.statusCode} ${res.statusMessage}` })
+          return reject({ code: res.statusCode, message: res.statusMessage })
         }
           
         try {
