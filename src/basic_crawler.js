@@ -389,6 +389,11 @@ class BasicCrawler {
 
         // Reclaim and retry request if flagged as retriable and retryCount is not exceeded.
         if (!request.noRetry && request.retryCount < this.maxRequestRetries) {
+            if (request.userData.requestTimeout > 0) {
+                _log.default.info(`BasicCrawler: Timeout request for ${(request.userData.requestTimeout / 1000).toFixed()} seconds`)
+                await new Promise(resolve => setTimeout(resolve, request.userData.requestTimeout))
+            }
+            
             request.retryCount++;
             log.exception(
                 error,
